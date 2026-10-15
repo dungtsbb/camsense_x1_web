@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Camsense X1 trên ESP32</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#101418; color:#e6e9ec; font-family:system-ui,sans-serif;
+         display:flex; flex-direction:column; align-items:center;
+         min-height:100vh; padding:12px; gap:10px; }
+  canvas { background:#0a0d10; border:1px solid #2b3440; border-radius:12px;
+           max-width:100%; height:auto; }
+  #info { font-size:13px; color:#9aa5b0; }
+  #info b { color:#3ecf6f; }
+  #info b.bad { color:#e05252; }
+  .ctl { font-size:13px; display:flex; gap:8px; align-items:center; }
+</style>
+</head>
+<body>
+<h3>Camsense X1 — quét trực tiếp</h3>
+<canvas id="c" width="560" height="560"></canvas>
+<div class="ctl">
+  Tầm hiển thị: <input type="range" id="rng" min="1" max="10" value="5"> <b id="rngv">5</b> m
+</div>
+<div id="info">Đang chờ dữ liệu…</div>
+<script>
+'use strict';
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const R = cv.width / 2;                 // tâm màn hình = vị trí lidar
+let rangeM = 5;                         // tầm hiển thị, mét
+
+document.getElementById('rng').oninput = e => {
+  rangeM = +e.target.value;
+  document.getElementById('rngv').textContent = rangeM;
+};
+
+function draw(d) {
+  ctx.clearRect(0, 0, cv.width, cv.height);
+
+  // Vòng tròn mốc mỗi 1m + hai trục
+  ctx.strokeStyle = '#1e2630';
+  ctx.fillStyle = '#4a5560';
+  ctx.font = '11px system-ui';
+  for (let m = 1; m <= rangeM; m++) {
+    const r = R * m / rangeM;
+    ctx.beginPath(); ctx.arc(R, R, r, 0, 2 * Math.PI); ctx.stroke();
+    ctx.fillText(m + 'm', R + 3, R - r + 12);
+  }
+  ctx.beginPath();
+  ctx.moveTo(0, R); ctx.lineTo(cv.width, R);
+  ctx.moveTo(R, 0); ctx.lineTo(R, cv.height);
+  ctx.stroke();
+
+  // Các điểm đo. Góc 0° của lidar vẽ hướng lên trên; trục y của canvas hướng
+  // xuống nên phải đảo dấu, nếu không ảnh quét bị lộn ngược.
+  ctx.fillStyle = '#3ecf6f';
+  for (let a = 0; a < d.length; a++) {
+    const mm = d[a];
+    if (mm === 0) continue;             // 0 = không có vật phản xạ
+    const m = mm / 1000;
+    if (m > rangeM) continue;
+    const rad = a * Math.PI / 180;
+    const x = R + R * m / rangeM * Math.sin(rad);
+    const y = R - R * m / rangeM * Math.cos(rad);
+    ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
+  }
+
+  // Chấm đỏ ở tâm: vị trí lidar
+  ctx.fillStyle = '#e05252';
+  ctx.beginPath(); ctx.arc(R, R, 4, 0, 2 * Math.PI); ctx.fill();
+}
+
+let fails = 0;
+async function poll() {
+  try {
+    const s = await (await fetch('/scan')).json();
+    draw(s.d);
+    const hit = s.d.filter(v => v > 0).length;
+    // Gói sai checksum tăng liên tục là dấu hiệu nguồn/dây, không phải lỗi code
+    const errCls = s.err > 50 ? ' class="bad"' : '';
+    document.getElementById('info').innerHTML =
+      `<b>${s.rpm}</b> vòng/phút &nbsp;|&nbsp; vòng quét #${s.seq} ` +
+      `&nbsp;|&nbsp; <b>${hit}</b>/360 hướng có dữ liệu ` +
+      `&nbsp;|&nbsp; gói sai checksum: <b${errCls}>${s.err}</b>`;
+    fails = 0;
+  } catch (e) {
+    if (++fails > 3) document.getElementById('info').textContent = 'Mất kết nối với ESP32';
+  }
+  // Hẹn giờ lại SAU khi xử lý xong, không dùng setInterval: mạng chậm là các
+  // yêu cầu dồn lên nhau và ESP32 sẽ tắc.
+  setTimeout(poll, 150);
+}
+poll();
+</script>
+</body>
+</html>
