@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Camsense X1 LiDAR Map</title>
+<style>
+  :root {
+    --bg: #0b0f19;
+    --panel: #151c2c;
+    --accent: #00f2fe;
+    --green: #00ff87;
+    --text: #e2e8f0;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+    padding: 12px;
+  }
+  header {
+    width: 100%;
+    max-width: 720px;
+    background: var(--panel);
+    padding: 12px 18px;
+    border-radius: 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    border: 1px solid #26334d;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .title {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .dot {
+    width: 10px;
+    height: 10px;
+    background: var(--green);
+    border-radius: 50%;
+    box-shadow: 0 0 8px var(--green);
+  }
+  .stats {
+    display: flex;
+    gap: 16px;
+    font-size: 0.9rem;
+    flex-wrap: wrap;
+  }
+  .stat-item span {
+    font-weight: 700;
+    color: var(--green);
+  }
+  .controls {
+    width: 100%;
+    max-width: 720px;
+    background: var(--panel);
+    padding: 10px 18px;
+    border-radius: 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    border: 1px solid #26334d;
+    flex-wrap: wrap;
+    gap: 12px;
+    font-size: 0.9rem;
+  }
+  select, button, input[type="range"] {
+    background: #0b0f19;
+    color: var(--text);
+    border: 1px solid #334155;
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .canvas-wrap {
+    position: relative;
+    width: 100%;
+    max-width: 680px;
+    aspect-ratio: 1 / 1;
+    background: radial-gradient(circle, #111a2e 0%, #090d16 100%);
+    border-radius: 50%;
+    border: 2px solid #1e293b;
+    box-shadow: 0 0 30px rgba(0, 242, 254, 0.08);
+    overflow: hidden;
+  }
+  canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  .tooltip {
+    margin-top: 10px;
+    font-size: 0.85rem;
+    color: #94a3b8;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title"><div class="dot" id="statusDot"></div> Camsense X1 2D Map</div>
+  <div class="stats">
+    <div class="stat-item">Tốc độ: <span id="rpmVal">0</span> RPM</div>
+    <div class="stat-item">Điểm: <span id="ptsVal">0</span>/360</div>
+    <div class="stat-item">Vòng: #<span id="seqVal">0</span></div>
+    <div class="stat-item">Lỗi CRC: <span id="errVal">0</span></div>
+  </div>
+</header>
+
+<div class="controls">
+  <div>
+    <label>Bán kính tối đa: </label>
+    <select id="maxRange">
+      <option value="1000">1 mét</option>
+      <option value="2000">2 mét</option>
+      <option value="3000">3 mét</option>
+      <option value="5000" selected>5 mét</option>
+      <option value="8000">8 mét</option>
+    </select>
+  </div>
+  <div>
+    <label>Chế độ vẽ: </label>
+    <select id="drawMode">
+      <option value="points">Điểm (Point Cloud)</option>
+      <option value="polygon">Đa giác (Room Contour)</option>
+      <option value="rays">Tia quét (Laser Rays)</option>
+    </select>
+  </div>
+  <div>
+    <label>Cỡ điểm: </label>
+    <input type="range" id="ptSize" min="1" max="6" value="3">
+  </div>
+</div>
+
+<div class="canvas-wrap">
+  <canvas id="radarCanvas" width="680" height="680"></canvas>
+</div>
+<div class="tooltip" id="hoverInfo">Di chuột hoặc chạm vào bản đồ để xem khoảng cách tại góc tương ứng</div>
+
+<script>
+const canvas = document.getElementById('radarCanvas');
+const ctx = canvas.getContext('2d');
+const W = canvas.width;
+const H = canvas.height;
+const CX = W / 2;
+const CY = H / 2;
+const RADIUS = (W / 2) - 24;
+
+let distances = new Array(360).fill(0);
+
+function drawGrid(maxDist) {
+  ctx.clearRect(0, 0, W, H);
+  ctx.strokeStyle = '#1e293b';
+  ctx.lineWidth = 1;
+
+  const steps = 4;
+  for (let i = 1; i <= steps; i++) {
+    const r = (RADIUS / steps) * i;
+    ctx.beginPath();
+    ctx.arc(CX, CY, r, 0, Math.PI * 2);
+    ctx.stroke();
+
+    const distLabel = ((maxDist / 1000) * (i / steps)).toFixed(2) + 'm';
+    ctx.fillStyle = '#64748b';
+    ctx.font = '12px sans-serif';
+    ctx.fillText(distLabel, CX + 6, CY - r + 14);
+  }
+
+  for (let deg = 0; deg < 360; deg += 30) {
+    const rad = (deg - 90) * Math.PI / 180;
+    const x = CX + RADIUS * Math.cos(rad);
+    const y = CY + RADIUS * Math.sin(rad);
+    ctx.beginPath();
+    ctx.moveTo(CX, CY);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+
+    const lx = CX + (RADIUS + 14) * Math.cos(rad);
+    const ly = CY + (RADIUS + 14) * Math.sin(rad);
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(deg + '°', lx, ly);
+  }
+  ctx.textAlign = 'start';
+}
+
+function renderMap() {
+  const maxDist = parseInt(document.getElementById('maxRange').value);
+  const mode = document.getElementById('drawMode').value;
+  const ptSize = parseInt(document.getElementById('ptSize').value);
+
+  drawGrid(maxDist);
+
+  let validPts = 0;
+  const coords = [];
+
+  for (let deg = 0; deg < 360; deg++) {
+    const d = distances[deg];
+    if (d > 0 && d <= maxDist) {
+      validPts++;
+      const rad = (deg - 90) * Math.PI / 180;
+      const r = (d / maxDist) * RADIUS;
+      const x = CX + r * Math.cos(rad);
+      const y = CY + r * Math.sin(rad);
+      coords.push({ x, y, d, deg });
+    }
+  }
+
+  document.getElementById('ptsVal').textContent = validPts;
+
+  if (mode === 'polygon' && coords.length > 2) {
+    ctx.beginPath();
+    ctx.moveTo(coords[0].x, coords[0].y);
+    for (let i = 1; i < coords.length; i++) {
+      ctx.lineTo(coords[i].x, coords[i].y);
+    }
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(0, 242, 254, 0.12)';
+    ctx.fill();
+    ctx.strokeStyle = '#00f2fe';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  } else if (mode === 'rays') {
+    ctx.strokeStyle = 'rgba(0, 255, 135, 0.25)';
+    ctx.lineWidth = 1;
+    for (const pt of coords) {
+      ctx.beginPath();
+      ctx.moveTo(CX, CY);
+      ctx.lineTo(pt.x, pt.y);
+      ctx.stroke();
+    }
+  }
+
+  for (const pt of coords) {
+    const ratio = Math.min(pt.d / maxDist, 1);
+    const hue = Math.floor(ratio * 160);
+    ctx.fillStyle = `hsl(${hue}, 100%, 55%)`;
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, ptSize, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.fillStyle = '#ff0055';
+  ctx.beginPath();
+  ctx.arc(CX, CY, 5, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+async function fetchScanData() {
+  try {
+    const res = await fetch('/scan');
+    if (!res.ok) throw new Error('HTTP err');
+    const data = await res.json();
+    if (data.d && data.d.length === 360) {
+      distances = data.d;
+    }
+    document.getElementById('rpmVal').textContent = data.rpm || 0;
+    document.getElementById('seqVal').textContent = data.seq || 0;
+    document.getElementById('errVal').textContent = data.err || 0;
+    document.getElementById('statusDot').style.background = '#00ff87';
+    renderMap();
+  } catch (e) {
+    document.getElementById('statusDot').style.background = '#ff3366';
+  }
+  setTimeout(fetchScanData, 100);
+}
+
+canvas.addEventListener('mousemove', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const mx = (e.clientX - rect.left) * scaleX - CX;
+  const my = (e.clientY - rect.top) * scaleY - CY;
+
+  let deg = Math.round(Math.atan2(my, mx) * 180 / Math.PI + 90);
+  if (deg < 0) deg += 360;
+  deg = deg % 360;
+
+  const d = distances[deg] || 0;
+  document.getElementById('hoverInfo').textContent =
+    `Góc: ${deg}° | Khoảng cách thực tế: ${d > 0 ? d + ' mm (' + (d/1000).toFixed(2) + ' m)' : 'Không có vật cản'}`;
+});
+
+fetchScanData();
+</script>
+</body>
+</html>
